@@ -1,35 +1,6 @@
-
-# Author: Lorenzo Speri
-# example usage:
-# python emri_pe.py -Tobs 2.0 -M 1e6 -mu 10.0 -p0 12.0 -e0 0.35 -dev 7 -eps 1e-2 -dt 10.0 -injectFD 1 -template fd -nwalkers 16 -ntemps 1 -downsample 100
-# example usage, source in the paper:
-# python emri_pe.py -Tobs 4.0 -M 3670041.7362535275 -mu 292.0583167470244 -p0 13.709101864726545 -e0 0.5794130830706371 -dev 5 -eps 1e-2 -dt 10.0 -injectFD 1 -template fd -nwalkers 16 -ntemps 1 -downsample 2 -window_flag 0
-# python emri_pe.py -Tobs 4.0 -M 3670041.7362535275 -mu 292.0583167470244 -p0 13.709101864726545 -e0 0.5794130830706371 -dev 5 -eps 1e-2 -dt 10.0 -injectFD 0 -template td -nwalkers 16 -ntemps 1 -downsample 0 -window_flag 0
-import argparse
-import os
-print("PID:",os.getpid())
-
-parser = argparse.ArgumentParser(description="MCMC of EMRI source")
-parser.add_argument("-Tobs", "--Tobs", help="Observation Time in years", required=True, type=float)
-parser.add_argument("-M", "--M", help="MBH Mass in solar masses", required=True, type=float)
-parser.add_argument("-mu", "--mu", help="Compact Object Mass in solar masses", required=True, type=float)
-parser.add_argument("-p0", "--p0", help="Semi-latus Rectum", required=True, type=float)
-parser.add_argument("-e0", "--e0", help="Eccentricity", required=True, type=float)
-parser.add_argument("-dev", "--dev", help="Cuda Device", required=False, type=int, default=0)
-parser.add_argument("-eps", "--eps", help="eps mode selection", required=False, type=float, default=1e-2)
-parser.add_argument("-dt", "--dt", help="sampling interval delta t", required=False, type=float, default=10.0)
-parser.add_argument("-injectFD", "--injectFD", help="inject a FD if 1", required=True, type=int)
-parser.add_argument("-template", "--template", help="template to be used: fd or td", required=True, type=str)
-parser.add_argument("-downsample", "--downsample", help="downsampling factor", required=True, type=int)
-parser.add_argument("-nwalkers", "--nwalkers", help="number of MCMC walkers", required=True, type=int)
-parser.add_argument("-ntemps", "--ntemps", help="number of MCMC temperatures", required=True, type=int)
-parser.add_argument("-nsteps", "--nsteps", help="number of MCMC iterations", required=False, type=int, default=1000)
-parser.add_argument("-window_flag", "--window_flag", help="windowing options: 0 or 1", required=False, type=int, default=0)
-
-args = vars(parser.parse_args())
-
 import sys
 import numpy as np
+import scipy as sp
 from eryn.state import State
 from eryn.ensemble import EnsembleSampler
 from eryn.prior import ProbDistContainer, uniform_dist
@@ -40,6 +11,7 @@ from eryn.moves import StretchMove, GaussianMove
 from lisatools.sampling.likelihood import Likelihood
 from lisatools.diagnostic import *
 import multiprocessing as mp
+
 
 # from lisatools.sensitivity import get_sensitivity
 from FDutils import *
@@ -55,6 +27,7 @@ from scipy.signal.windows import (
 from few.waveform import GenerateEMRIWaveform
 from few.utils.utility import get_p_at_t
 from few.trajectory.inspiral import EMRIInspiral
+from few.summation.interpolatedmodesum import CubicSplineInterpolant
 
 from eryn.utils import TransformContainer
 
@@ -64,13 +37,41 @@ from few.utils.constants import *
 
 SEED = 2601996
 np.random.seed(SEED)
+dev = 0
+
+
+# load Power Spectral Density of LISA. This represents how loud the instrumental noise is.
+noise = np.genfromtxt('GRAPPA_EMRI_tutorial-main/LPA.txt', names=True)
+f, PSD = (
+    np.asarray(noise["f"], dtype=np.float64),
+    np.asarray(noise["ASD"], dtype=np.float64) ** 2,
+)
+
+# here we use a cubic spline to interpolate the PSD
+sens_fn = CubicSplineInterpolant(f, PSD, use_gpu=False)
+
+# def inner_product(a,b,dt):
+#     a_tilde = np.fft.rfft(a)*dt
+#     b_tilde = np.fft.rfft(b)*dt
+#     freq = np.fft.rfftfreq(len(a),dt)
+#     df = freq[1]-freq[0]
+#     psd_f = sens_fn(freq)
+#     return 4.0 * np.real ( np.sum( np.conj(a_tilde) * b_tilde * df / psd_f) )
+
+
+def get_noise(N,dt):
+    freq = np.fft.rfftfreq(N,dt)
+    noise = np.fft.irfft(np.random.normal(0.0,np.sqrt(sens_fn(freq)))+1j*np.random.normal(0.0,np.sqrt(sens_fn(freq))))/np.sqrt(dt*4/N)
+    print(inner_product(noise,noise,dt)/N)
+    return noise
+
 
 request_gpu = True
 if request_gpu:
     try:
         import cupy as xp
         # set GPU device
-        xp.cuda.runtime.setDevice(args["dev"])
+        xp.cuda.runtime.setDevice(dev)
         use_gpu = True
     except (ImportError, ModuleNotFoundError) as e:
         import numpy as xp
@@ -121,6 +122,35 @@ td_gen = GenerateEMRIWaveform(
     # frame='source',
 )
 
+parameters = ['M', 'mu', 'a', 'p0', 'e0', 'x0', 'dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_phi0', 'Phi_theta0', 'Phi_r0']
+
+def transform_parameters_to_01(params, boundaries):
+    """
+    Transform parameters from the prior space to unit cube
+    """
+    params01 = (params - boundaries[:, 0]) / (boundaries[:, 1] - boundaries[:, 0])
+    return params01
+
+def transform_parameters_from_01(params01, boundaries):
+    """
+    Transform parameters from the unit cube to the prior space
+    """
+    params = params01 * (boundaries[:, 1] - boundaries[:, 0]) + boundaries[:, 0]
+    return params
+
+def from_01_to_loglikelihood(params01_reduced, *args):
+    """
+    Transform parameters from the unit cube to the prior space and compute the SNR
+    """
+    transform_fn, data_stream, boundaries, fd_inner_product_kwargs, emri_kwargs, fd_gen = args
+    params = transform_parameters_from_01(params01_reduced, boundaries)
+    sample = transform_fn.both_transforms(params[None, :])[0]
+    # generate FD waveforms
+    data_channels_fd = fd_gen(*sample, **emri_kwargs)
+    # compute the likelihood
+    return -float(inner_product(data_channels_fd, data_stream, normalize=False, **fd_inner_product_kwargs))
+
+
 
 # function call
 def run_emri_pe(
@@ -154,7 +184,7 @@ def run_emri_pe(
         Phi_theta0,  # 12
         Phi_r0,
     ) = emri_injection_params
-
+    
     # for transforms
     # this is an example of how you would fill parameters
     # if you want to keep them fixed
@@ -164,8 +194,10 @@ def run_emri_pe(
         "fill_values": np.array(
             [0.0, x0, dist, qS, phiS, qK, phiK, Phi_theta0]
         ),  # spin and inclination and Phi_theta
-        "fill_inds": np.array([2, 5, 6, 7, 8, 9, 10, 12]),
+        "fill_inds": np.array([i for i, x in enumerate(parameters) if x in ['a', 'x0', 'dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']])
+        #[2, 5, 6, 7, 8, 9, 10, 12]),
     }
+    sample_inds = np.array([i for i, x in enumerate(parameters) if x not in ['a', 'x0', 'dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']])
 
     # mass ratio
     emri_injection_params[1] = np.log(
@@ -176,6 +208,27 @@ def run_emri_pe(
 
     # remove three we are not sampling from (need to change if you go to adding spin)
     emri_injection_params_in = np.delete(emri_injection_params, fill_dict["fill_inds"])
+
+    boundaries_dict = {
+        # 'M': [np.log(5e5), np.log(1e7)],
+        # 'mu': [np.log(1e-6), np.log(1e-4)],
+        'M': [np.log(1e6), np.log(5e6)],
+        'mu': [np.log(5e-6), np.log(5e-4)],
+        'a': [0.0, 0.998],
+        'p0': [7.5, 10.0],
+        'e0': [0.001, 0.5],
+        'x0': [0.0, 10],
+        'dist': [1.0, 1e4],
+        'qS': [0, 10.0],
+        'phiS': [0.0, 2*np.pi],
+        'qK': [0, 10.0],
+        'phiK': [0.0, 2*np.pi],
+        'Phi_phi0': [0.0, 2*np.pi],
+        'Phi_theta0': [0.0, 2*np.pi],
+        'Phi_r0': [0.0, 2*np.pi]}
+
+    boundaries_all = np.array(list(boundaries_dict.values()))
+    boundaries = boundaries_all[sample_inds]
 
     # priors
     priors = {
@@ -247,7 +300,10 @@ def run_emri_pe(
 
     # generate TD waveform, this will return a list with hp and hc
     data_channels_td = td_gen_list(*injection_in, **emri_kwargs)
-    
+    noise = get_noise(len(data_channels_td[0])+2,dt)[:len(data_channels_td[0])]
+    data_channels_td_noisy = [data_channels_td[0]+xp.array(noise), data_channels_td[1]+xp.array(noise)]
+    data_channels_fd_noisy = [xp.fft.rfft(data_channels_td_noisy[0]), xp.fft.rfft(data_channels_td_noisy[1])]
+
     # timing
     tic = time.perf_counter()
     [td_gen(*injection_in, **emri_kwargs) for _ in range(repeat)]
@@ -268,6 +324,7 @@ def run_emri_pe(
     # injections
     sig_fd = fd_gen(*injection_in, **emri_kwargs)
     sig_td = fft_td_gen(*injection_in, **emri_kwargs)
+
 
     # kwargs for computing inner products
     print("shape", sig_td[0].shape, sig_fd[0].shape)
@@ -309,8 +366,66 @@ def run_emri_pe(
     else:
         data_stream = sig_td
 
+
+
+    # # short fourier transform of the signal
+    # f, t, Zxx = sp.signal.stft(sig_td[0].get().real, 1/dt, nperseg=5000)
+    # plt.figure(figsize=(16,10))
+    # cb = plt.pcolormesh(t, f, np.log10(np.abs(Zxx)), shading='gouraud')
+    # plt.colorbar(cb,)
+    # plt.title('STFT Magnitude')
+    # plt.ylabel('Frequency [Hz]')
+    # plt.xlabel('Time [sec]')
+    # plt.yscale('log')
+    # plt.ylim([1e-4, f[-1]])
+    # plt.show()
+
+    plt.figure()
+    plt.plot(sig_td[0].get())
+    plt.show()
+    # plt.savefig(fp[:-3] + "injection.pdf")
+
+    # compute the signal only for 1 week for 1 month prior to the merger
+    start_time = 30/365.25
+    end_time = 40/365.25
+    start_time2 = 80/365.25
+    end_time2 = 90/365.25
+    year_in_seconds = 365.25*24*3600
+    # get the index of the time window
+    start_index = int(start_time*year_in_seconds / dt)
+    end_index = int(end_time*year_in_seconds / dt)
+    start_index2 = int(start_time2*year_in_seconds / dt)
+    end_index2 = int(end_time2*year_in_seconds / dt)
+    # get the window with zeros outside the time window
+    window = xp.zeros(len(data_channels_td[0]))
+    hann_window = xp.asarray(hann(end_index-start_index))
+    window[start_index:end_index] = 1
+    window[start_index2:end_index2] = 1
+    # get the windowed signal
+    fft_td_gen_windowed = get_fd_waveform_fromTD(td_gen_list, positive_frequency_mask, dt, window=window)
+    fd_gen_windowed = get_fd_waveform_fromFD(few_gen_list, positive_frequency_mask, dt, window=window)
+    fft_td_gen = get_fd_waveform_fromTD(td_gen_list, positive_frequency_mask, dt)
+    fd_gen = get_fd_waveform_fromFD(few_gen_list, positive_frequency_mask, dt)
+    # injections
+    sig_fd_windowed = fd_gen_windowed(*injection_in, **emri_kwargs)
+    sig_td_windowed = fft_td_gen_windowed(*injection_in, **emri_kwargs)
+
+    # check duration of computation
+    tic = time.perf_counter()
+    [fft_td_gen_windowed(*injection_in, **emri_kwargs) for _ in range(3)]
+    toc = time.perf_counter()
+    print('fd time windowed', (toc-tic)/3)
+    tic = time.perf_counter()
+    [fd_gen_windowed(*injection_in, **emri_kwargs) for _ in range(3)]
+    toc = time.perf_counter()
+    print('fd time', (toc-tic)/3)
+
+
+
+
     if use_gpu:
         plt.figure()
+        plt.loglog(np.abs(data_channels_fd_noisy[0].get()) ** 2)
         plt.loglog(np.abs(data_stream[0].get()) ** 2)
         plt.savefig(fp[:-3] + "injection.pdf")
     else:
@@ -318,7 +433,136 @@ def run_emri_pe(
         plt.loglog(np.abs(data_stream[0]) ** 2)
         plt.savefig(fp[:-3] + "injection.pdf")
 
-    if downsample!=False:
+
+    # check the SNR of the injected signal
+    print("SNR = ", snr(data_stream, **fd_inner_product_kwargs))
+    print("SNR = ", snr(data_channels_fd_noisy, **fd_inner_product_kwargs))
+    print("SNR windowed = ", snr(sig_td, **fd_inner_product_kwargs))
+    print("SNR windowed = ", snr(sig_td_windowed, **fd_inner_product_kwargs))
+    
+    print(
+        "Overlap total and partial ",
+        inner_product(sig_td[0], sig_td[0], normalize=False, **fd_inner_product_kwargs),
+        inner_product(sig_fd[0], sig_td[0], normalize=True, **fd_inner_product_kwargs),
+        inner_product(sig_fd[1], sig_td[1], normalize=True, **fd_inner_product_kwargs),
+    )
+
+    # time to compute the likelihood
+    tic = time.perf_counter()
+    [like_gen(*injection_in, **emri_kwargs) for _ in range(3)]
+    toc = time.perf_counter()
+    print('fd time', (toc-tic)/3)
+
+    # time to compute the inner product
+    tic = time.perf_counter()
+    [inner_product(sig_fd, sig_td, normalize=True, **fd_inner_product_kwargs) for _ in range(3)]
+    toc = time.perf_counter()
+    print('fd time', (toc-tic)/3)
+
+    def tf_product(a,b):
+        y = func(temp1.conj() * temp2) / PSD_arr  # assumes right summation rule
+
+        out += 4 * xp.sum(x_vals * y)
+        return 
+
+    # get parameters after transformation
+
+    params01_reduced = transform_parameters_to_01(emri_injection_params[sample_inds], boundaries)
+    args = (transform_fn, data_channels_fd_noisy, boundaries, fd_inner_product_kwargs, emri_kwargs, fd_gen)
+    loglikelihood = from_01_to_loglikelihood(params01_reduced, *args)
+
+    print('loglikelihood', loglikelihood)
+    params01_reduced[0] += 10**-4
+    params = transform_parameters_from_01(params01_reduced, boundaries)
+    sample = transform_fn.both_transforms(params[None, :])[0]
+
+    sig_fd_windowed = fft_td_gen_windowed(*injection_in, **emri_kwargs)
+    sig_fd = fft_td_gen(*injection_in, **emri_kwargs)
+    sample_fd_windowed = fft_td_gen_windowed(*sample, **emri_kwargs)
+    sample_fd = fft_td_gen(*sample, **emri_kwargs)
+    f_mesh, t_mesh, sig_Z = sp.signal.stft(xp.fft.irfft(xp.array(sig_fd[0])).get(), 1/dt, nperseg=5000)
+    f_mesh, t_mesh, sample_Z = sp.signal.stft(xp.fft.irfft(xp.array(sample_fd[0])).get(), 1/dt, nperseg=5000)
+    plt.figure(figsize=(16,10))
+    plt.imshow(np.abs(sig_Z[:400,:640]), aspect='auto')
+
+    PSD_arr = get_sensitivity(f_mesh[:400])
+    y = np.divide(np.real(sig_Z[:400,:640].conj() * sample_Z[:400,:640]),np.array([PSD_arr]).T) # assumes right summation rule
+
+    # plt.figure()
+    # plt.loglog(f_mesh[:400],PSD_arr)
+    # plt.show()
+    # assumes right summation rule
+
+    x_diff = float(xp.diff(f_mesh[:400])[1])
+    out = 4 * xp.sum(x_diff * y)
+    print('tf product', out)
+
+    # print('inner product', inner_product(sig_fd, sig_fd, normalize=True, **fd_inner_product_kwargs))
+    # print('inner product', inner_product(sig_fd_windowed, sig_fd_windowed, normalize=True, **fd_inner_product_kwargs))
+    # print('inner product', inner_product(sig_fd, sig_fd_windowed, normalize=True, **fd_inner_product_kwargs))
+    print('inner product', inner_product(sig_fd, sample_fd, normalize=True, **fd_inner_product_kwargs))
+    print('inner product windowed', inner_product(sig_fd_windowed, sample_fd_windowed, normalize=True, **fd_inner_product_kwargs))
+
+
+
+    time_series = np.arange(len(data_channels_td[0]))*dt
+    plt.figure()
+    plt.plot(time_series[:-1],xp.fft.irfft(xp.array(sig_fd[0])).get())
+    plt.plot(time_series[:-1],xp.fft.irfft(xp.array(sig_td_windowed[0])).get())
+    plt.plot(time_series[:-1],xp.fft.irfft(xp.array(sample_fd[0])).get())
+    # plt.plot(time_series[:-1],xp.fft.irfft(xp.array(sample_fd_windowed[0])).get())
+    # plt.plot(time_series,window.get()*xp.fft.ifft(xp.array(sig_td[0])).get().max())
+    plt.show()
+
+
+    # short fourier transform of the signal
+
+    # f_mesh, t_mesh, Zxx = sp.signal.stft(xp.fft.irfft(xp.array(sig_fd[0])).get(), 1/dt, nperseg=5000)
+    f_mesh, t_mesh, Zxx = sp.signal.stft(xp.fft.irfft(xp.array(data_channels_fd_noisy[0])).get(), 1/dt, nperseg=5000)
+    plt.figure(figsize=(16,10))
+    cb = plt.pcolormesh(t_mesh, f_mesh, np.log10(np.abs(Zxx)), shading='gouraud')
+    plt.colorbar(cb,)
+    plt.title('STFT Magnitude')
+    plt.ylabel('Frequency [Hz]')
+    plt.xlabel('Time [sec]')
+    plt.yscale('log')
+    plt.ylim([1e-4, f[-1]])
+    plt.show()
+
+    loglikelihood = from_01_to_loglikelihood(params01_reduced, *args)
+    print('loglikelihood', loglikelihood)
+
+    result01 = sp.optimize.differential_evolution(
+        from_01_to_loglikelihood,
+        [(0.0, 1.0)]*len(params01_reduced),
+        args=args,
+        maxiter=100,
+        strategy='best1bin',
+        tol=1e-5,
+        disp=True,
+        polish=True,
+        popsize=10,
+        recombination=0.7,
+        mutation=(0.5,1),
+        x0=params01_reduced
+    )
+    print(result01)
+
+    # generate FD waveforms
+    data_channels_fd = fd_gen(*sample, **emri_kwargs)
+    # short fourier transform of the signal
+    f_mesh, t_mesh, Zxx = sp.signal.stft(xp.fft.irfft(xp.array(sig_td[0])).get(), 1/dt, nperseg=5000)
+    plt.figure(figsize=(16,10))
+    cb = plt.pcolormesh(t_mesh, f_mesh, np.log10(np.abs(Zxx)), shading='gouraud')
+    plt.colorbar(cb,)
+    plt.title('STFT Magnitude')
+    plt.ylabel('Frequency [Hz]')
+    plt.xlabel('Time [sec]')
+    plt.yscale('log')
+    plt.ylim([1e-4, f[-1]])
+    plt.show()
+
+    if downsample:
         # here we will downsample to the frequencies that make the waveform non zero
 
         if template == "td":
@@ -365,8 +609,8 @@ def run_emri_pe(
         tic = time.perf_counter()
         [like_gen_ds(*injection_in, **emri_kwargs_ds) for _ in range(3)]
         toc = time.perf_counter()
-        fd_time = toc-tic
-        print('fd time', fd_time/3)
+
+        print('fd time', (toc-tic)/3)
         # take the previous datastream and downsample
         print("SNR = ", snr(check_downsampled, **fd_inner_product_kwargs_downsamp))
 
@@ -415,10 +659,10 @@ def run_emri_pe(
         add_noise=False,
     )
 
-    
+
     # gpu samples for the case of 
     # python emri_pe.py -Tobs 4.0 -M 3670041.7362535275 -mu 292.0583167470244 -p0 13.709101864726545 -e0 0.5794130830706371 -dev 7 -eps 1e-2 -dt 10.0 -injectFD 1 -template fd -nwalkers 32 -ntemps 2 -downsample 1 --window_flag 0
-    gpusamp = np.load("samples_GPU.npy")
+    gpusamp = np.load("EMRI_FrequencyDomainWaveforms/samples_GPU.npy")
 
     if downsample:
         del like,emri_kwargs
@@ -436,7 +680,7 @@ def run_emri_pe(
 
     # generate starting points
     factor = 1e-5
-    cov = 100*np.cov(np.load("covariance.npy"), rowvar=False) / (2.4 * ndim)
+    cov = 100*np.cov(np.load("EMRI_FrequencyDomainWaveforms/covariance.npy"), rowvar=False) / (2.4 * ndim)
 
     start_params = np.random.multivariate_normal(
         emri_injection_params_in, cov, size=nwalkers * ntemps
@@ -511,6 +755,11 @@ def run_emri_pe(
         print("file not found")
     import pickle
 
+
+
+
+
+
     if use_gpu:
         # prepare sampler
         sampler = EnsembleSampler(
@@ -583,96 +832,134 @@ def run_emri_pe(
     return
 
 
-if __name__ == "__main__":
 
-    window_flag = bool(args["window_flag"])
-    downsample = int(args["downsample"])
-    Tobs = args["Tobs"]  # years
-    dt = args["dt"]  # seconds
-    eps = args["eps"]  # threshold mode content
-    injectFD = args["injectFD"]  # 0 = inject TD
-    template = args["template"]  #'fd'
+def func(parameters, *data):
 
-    # set parameters
-    M = args["M"]  # 1e6
-    a = 0.1  # will be ignored in Schwarzschild waveform
-    mu = args["mu"]  # 10.0
-    p0 = args["p0"]  # 12.0
-    e0 = args["e0"]  # 0.35
-    x0 = 1.0  # will be ignored in Schwarzschild waveform
-    qK = np.pi / 3  # polar spin angle
-    phiK = np.pi / 3  # azimuthal viewing angle
-    qS = np.pi / 3  # polar sky angle
-    phiS = np.pi / 3  # azimuthal viewing angle
-    # the next lines normalize the distance to the SNR for the source analyze in the paper
-    # if window_flag:
-    #     dist = 1
-    # else:
-    #     dist = 2.4539054256
-    dist = 2.4539054256
-    Phi_phi0 = np.pi / 3
-    Phi_theta0 = 0.0
-    Phi_r0 = np.pi / 3
+    #we have 3 parameters which will be passed as parameters and
+    #"experimental" x,y which will be passed as data
 
-    ntemps = args["ntemps"]
-    nwalkers = args["nwalkers"]
+    a,b,c = parameters
+    x,y = data
 
-    traj = EMRIInspiral(func="SchwarzEccFlux")
+    result = 0
 
-    # fix p0 given T
-    p0 = get_p_at_t(
-        traj,
-        Tobs * 0.99,
-        [M, mu, 0.0, e0, 1.0],
-        index_of_p=3,
-        index_of_a=2,
-        index_of_e=4,
-        index_of_x=5,
-        traj_kwargs={},
-        xtol=2e-12,
-        rtol=8.881784197001252e-16,
-        bounds=None,
-    )
-    print("new p0 fixed by Tobs", p0)
+    for i in range(len(x)):
+        result += (a*x[i]**2 + b*x[i]+ c - y[i])**2
 
-    # name output
-    fp = f"./test_MCMC_M{M:.2}_mu{mu:.2}_p{p0:.2}_e{e0:.2}_T{Tobs}_eps{eps}_seed{SEED}_nw{nwalkers}_nt{ntemps}_downsample{int(downsample)}_injectFD{injectFD}_usegpu{str(use_gpu)}_template{template}_window_flag{window_flag}.h5"
+    return result**0.5
+bounds = [(0.5, 1.5), (-0.3, 0.3), (-0.1, 0.1)]
 
-    emri_injection_params = np.array([
-        M,  
-        mu, 
-        a,
-        p0, 
-        e0, 
-        x0, 
-        dist, 
-        qS, 
-        phiS, 
-        qK, 
-        phiK, 
-        Phi_phi0, 
-        Phi_theta0, 
-        Phi_r0
-    ])
+#producing "experimental" data 
+x = [i for i in range(6)]
+y = [x**2 for x in x]
+
+#packing "experimental" data into args
+args = (x,y)
+
+result = sp.optimize.differential_evolution(func, bounds=bounds, args=args)
+print(result.x)
 
 
-    waveform_kwargs = {
-        "T": Tobs,
-        "dt": dt,
-        "eps": eps
-    }
 
-    run_emri_pe(
-        emri_injection_params,
-        Tobs,
-        dt,
-        fp,
-        ntemps,
-        nwalkers,
-        emri_kwargs=waveform_kwargs,
-        template=template,
-        downsample=downsample,
-        injectFD=injectFD,
-        window_flag=window_flag,
-        nsteps=args["nsteps"],
-    )
+window_flag = bool(0)
+downsample = int(0)
+Tobs = 0.2  # years
+dt = 10.0  # seconds
+eps = 1e-2  # threshold mode content
+injectFD = 0  # 0 = inject TD
+template = 'td'  #'fd'
+
+# set parameters
+M = 2000000.0  # 1e6
+a = 0.1  # will be ignored in Schwarzschild waveform
+mu = 20.0  # 10.0
+p0 = 13.709101864726545  # 12.0
+p0 = 8.0  # 12.0
+e0 = 0.35 #0.5794130830706371  # 0.35
+x0 = 1.0  # will be ignored in Schwarzschild waveform
+qK = np.pi / 3  # polar spin angle
+phiK = np.pi / 3  # azimuthal viewing angle
+qS = np.pi / 3  # polar sky angle
+phiS = np.pi / 3  # azimuthal viewing angle
+# the next lines normalize the distance to the SNR for the source analyze in the paper
+# if window_flag:
+#     dist = 1
+# else:
+#     dist = 2.4539054256
+dist = .1
+Phi_phi0 = np.pi / 3
+Phi_theta0 = 0.0
+Phi_r0 = np.pi / 3
+
+m1 = M / (1 + mu)
+m2 = M - m1
+
+ntemps = 1
+nwalkers = 16
+nsteps = 1000
+
+traj = EMRIInspiral(func="SchwarzEccFlux")
+
+# fix p0 given T
+tic = time.time()
+[get_p_at_t(traj, Tobs * 0.9, [M, mu, 0.0, e0, 1.0], index_of_p=3, index_of_a=2, index_of_e=4, index_of_x=5) for _ in range(10)]
+toc = time.time()
+print("time to get p0", (toc - tic) / 10)
+p0 = get_p_at_t(
+    traj,
+    Tobs * 0.9,
+    [M, mu, 0.0, e0, 1.0],
+    index_of_p=3,
+    index_of_a=2,
+    index_of_e=4,
+    index_of_x=5,
+    traj_kwargs={},
+    xtol=2e-12,
+    rtol=8.881784197001252e-16,
+    bounds=None,
+)
+
+
+print("new p0 fixed by Tobs", p0)
+
+# name output
+fp = f"./test_MCMC_M{M:.2}_mu{mu:.2}_p{p0:.2}_e{e0:.2}_T{Tobs}_eps{eps}_seed{SEED}_nw{nwalkers}_nt{ntemps}_downsample{int(downsample)}_injectFD{injectFD}_usegpu{str(use_gpu)}_template{template}_window_flag{window_flag}.h5"
+
+emri_injection_params = np.array([
+    M,  
+    mu, 
+    a,
+    p0, 
+    e0, 
+    x0, 
+    dist, 
+    qS, 
+    phiS, 
+    qK, 
+    phiK, 
+    Phi_phi0, 
+    Phi_theta0, 
+    Phi_r0
+])
+
+
+waveform_kwargs = {
+    "T": Tobs,
+    "dt": dt,
+    "eps": eps
+}
+
+run_emri_pe(
+    emri_injection_params,
+    Tobs,
+    dt,
+    fp,
+    ntemps,
+    nwalkers,
+    emri_kwargs=waveform_kwargs,
+    template=template,
+    downsample=downsample,
+    injectFD=injectFD,
+    window_flag=window_flag,
+    nsteps=nsteps,
+)

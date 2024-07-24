@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import CubicSpline
-S_git = np.genfromtxt('./LISA_Alloc_Sh.txt')
+S_git = np.genfromtxt('./EMRI_FrequencyDomainWaveforms/LISA_Alloc_Sh.txt')
 Sh_X = CubicSpline(S_git[:,0], S_git[:,1])
 
 request_gpu = True
