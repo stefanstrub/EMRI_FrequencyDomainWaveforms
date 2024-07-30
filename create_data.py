@@ -151,6 +151,29 @@ def from_01_to_loglikelihood(params01_reduced, *args):
     return -float(inner_product(data_channels_fd, data_stream, normalize=False, **fd_inner_product_kwargs))
 
 
+def from_01_to_timefrequency_loglikelihood(params01_reduced, *args):
+    """
+    Transform parameters from the unit cube to the prior space and compute the SNR
+    """
+    transform_fn, data_Z, PSD_arr, boundaries, emri_kwargs, fd_gen, x_diff, sum_data_y, max_frequency_index = args
+    params = transform_parameters_from_01(params01_reduced, boundaries)
+    sample = transform_fn.both_transforms(params[None, :])[0]
+    # generate FD waveforms
+    data_channels_fd = fd_gen(*sample, **emri_kwargs)
+    # compute the likelihood
+
+    f_mesh, t_mesh, sample_Z = sp.signal.stft(xp.fft.irfft(xp.array(data_channels_fd[0])).get(), 1/dt, nperseg=5000)
+
+    y = np.divide(np.abs(data_Z[:max_frequency_index,2:-2]) * np.abs(sample_Z[:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
+    # data_y = np.divide(np.abs(data_Z[:max_frequency_index,2:-2]) * np.abs(data_Z[:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
+    sample_y = np.divide(np.abs(sample_Z[:max_frequency_index,2:-2]) * np.abs(sample_Z[:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
+
+    sum_y = 4 * xp.sum(x_diff * y)
+    # sum_data_y = 4 * xp.sum(x_diff * data_y)
+    sum_sample_y = 4 * xp.sum(x_diff * sample_y)
+    out = sum_y/np.sqrt(sum_data_y*sum_sample_y)
+    return -float(out)
+
 
 # function call
 def run_emri_pe(
@@ -469,33 +492,46 @@ def run_emri_pe(
 
     params01_reduced = transform_parameters_to_01(emri_injection_params[sample_inds], boundaries)
     args = (transform_fn, data_channels_fd_noisy, boundaries, fd_inner_product_kwargs, emri_kwargs, fd_gen)
+    
     loglikelihood = from_01_to_loglikelihood(params01_reduced, *args)
 
     print('loglikelihood', loglikelihood)
-    params01_reduced[0] += 10**-4
-    params = transform_parameters_from_01(params01_reduced, boundaries)
+    print('injected parameters reduced', emri_injection_params[sample_inds])
+    print('injected parameters reduced 01', params01_reduced)
+    # params01_reduced[0] += 10**-2
+    initial_params01_reduced = np.random.uniform(0,1,len(params01_reduced))
+    print('initial parameters reduced 01', initial_params01_reduced)
+    params = transform_parameters_from_01(initial_params01_reduced, boundaries)
     sample = transform_fn.both_transforms(params[None, :])[0]
 
     sig_fd_windowed = fft_td_gen_windowed(*injection_in, **emri_kwargs)
     sig_fd = fft_td_gen(*injection_in, **emri_kwargs)
     sample_fd_windowed = fft_td_gen_windowed(*sample, **emri_kwargs)
     sample_fd = fft_td_gen(*sample, **emri_kwargs)
+    f_mesh, t_mesh, data_Z = sp.signal.stft(xp.fft.irfft(xp.array(data_channels_fd_noisy[0])).get(), 1/dt, nperseg=5000)
     f_mesh, t_mesh, sig_Z = sp.signal.stft(xp.fft.irfft(xp.array(sig_fd[0])).get(), 1/dt, nperseg=5000)
     f_mesh, t_mesh, sample_Z = sp.signal.stft(xp.fft.irfft(xp.array(sample_fd[0])).get(), 1/dt, nperseg=5000)
-    plt.figure(figsize=(16,10))
-    plt.imshow(np.abs(sig_Z[:400,:640]), aspect='auto')
+    # plt.figure(figsize=(16,10))
+    # plt.imshow(np.abs(sig_Z[:400,:640]), aspect='auto')
 
-    PSD_arr = get_sensitivity(f_mesh[:400])
-    y = np.divide(np.real(sig_Z[:400,:640].conj() * sample_Z[:400,:640]),np.array([PSD_arr]).T) # assumes right summation rule
+    PSD_arr = get_sensitivity(f_mesh[:200])
+    y = np.real(sig_Z[:200,:640].conj() * sample_Z[:200,:640]) # assumes right summation rule
+    y = np.divide(np.abs(sample_Z[:200,:640]) * np.abs(sample_Z[:200,:640]),np.array([PSD_arr]).T) # assumes right summation rule
+    # y = np.divide(np.real(sig_Z[:400,:640].conj() * sample_Z[:400,:640]),np.array([PSD_arr]).T) # assumes right summation rule
 
     # plt.figure()
-    # plt.loglog(f_mesh[:400],PSD_arr)
+    # plt.loglog(f_mesh[:200],PSD_arr)
     # plt.show()
     # assumes right summation rule
 
-    x_diff = float(xp.diff(f_mesh[:400])[1])
+    x_diff = float(xp.diff(f_mesh[:200])[1])
     out = 4 * xp.sum(x_diff * y)
     print('tf product', out)
+
+    plt.figure()
+    plt.imshow(np.abs(sample_Z[40:200,2:-2]), aspect='auto')
+    plt.colorbar()
+
 
     # print('inner product', inner_product(sig_fd, sig_fd, normalize=True, **fd_inner_product_kwargs))
     # print('inner product', inner_product(sig_fd_windowed, sig_fd_windowed, normalize=True, **fd_inner_product_kwargs))
@@ -529,13 +565,25 @@ def run_emri_pe(
     plt.ylim([1e-4, f[-1]])
     plt.show()
 
-    loglikelihood = from_01_to_loglikelihood(params01_reduced, *args)
+    loglikelihood = from_01_to_loglikelihood(initial_params01_reduced, *args)
     print('loglikelihood', loglikelihood)
 
+    plt.figure()
+    plt.imshow(np.abs(data_Z[40:200,2:-2]), aspect='auto')
+    plt.colorbar()
+
+    max_frequency_index = 200
+    PSD_arr = get_sensitivity(f_mesh[:max_frequency_index])
+    data_y = np.divide(np.abs(data_Z[:max_frequency_index,2:-2]) * np.abs(data_Z[:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
+    sum_data_y = 4 * xp.sum(x_diff * data_y)
+    args_tf = (transform_fn, data_Z, PSD_arr, boundaries, emri_kwargs, fd_gen, x_diff, sum_data_y, max_frequency_index)
+    tf_loglikelihood = from_01_to_timefrequency_loglikelihood(initial_params01_reduced, *args_tf)
+    print('tf loglikelihood', tf_loglikelihood)
+
     result01 = sp.optimize.differential_evolution(
-        from_01_to_loglikelihood,
-        [(0.0, 1.0)]*len(params01_reduced),
-        args=args,
+        from_01_to_timefrequency_loglikelihood,
+        [(0.0, 1.0)]*len(initial_params01_reduced),
+        args=args_tf,
         maxiter=100,
         strategy='best1bin',
         tol=1e-5,
@@ -544,9 +592,25 @@ def run_emri_pe(
         popsize=10,
         recombination=0.7,
         mutation=(0.5,1),
-        x0=params01_reduced
+        x0=initial_params01_reduced,
+        seed=44
     )
     print(result01)
+    initial_params01_reduced = result01.x
+    loglikelihood = from_01_to_loglikelihood(result01.x, *args)
+    print('loglikelihood', loglikelihood)
+    print('found parameters', transform_parameters_from_01(result01.x, boundaries))
+    print('injected parameters', emri_injection_params[sample_inds])
+
+    params = transform_parameters_from_01(result01.x, boundaries)
+    sample = transform_fn.both_transforms(params[None, :])[0]
+    sample_fd = fft_td_gen(*sample, **emri_kwargs)
+    f_mesh, t_mesh, sig_Z = sp.signal.stft(xp.fft.irfft(xp.array(sig_fd[0])).get(), 1/dt, nperseg=5000)
+    f_mesh, t_mesh, sample_Z = sp.signal.stft(xp.fft.irfft(xp.array(sample_fd[0])).get(), 1/dt, nperseg=5000)
+    plt.figure()
+    plt.imshow(np.abs(sample_Z[40:200,2:-2]), aspect='auto')
+    plt.colorbar()
+
 
     # generate FD waveforms
     data_channels_fd = fd_gen(*sample, **emri_kwargs)
