@@ -215,12 +215,12 @@ def run_emri_pe(
     fill_dict = {
         "ndim_full": 14,
         "fill_values": np.array(
-            [0.0, x0, dist, qS, phiS, qK, phiK, Phi_theta0]
+            [dist, qS, phiS, qK, phiK, Phi_theta0] # 0.0, x0
         ),  # spin and inclination and Phi_theta
-        "fill_inds": np.array([i for i, x in enumerate(parameters) if x in ['a', 'x0', 'dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']])
+        "fill_inds": np.array([i for i, x in enumerate(parameters) if x in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']]) #'a', 'x0'
         #[2, 5, 6, 7, 8, 9, 10, 12]),
     }
-    sample_inds = np.array([i for i, x in enumerate(parameters) if x not in ['a', 'x0', 'dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']])
+    sample_inds = np.array([i for i, x in enumerate(parameters) if x not in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']])
 
     # mass ratio
     emri_injection_params[1] = np.log(
@@ -259,10 +259,12 @@ def run_emri_pe(
             {
                 0: uniform_dist(np.log(5e5), np.log(1e7)),  # M
                 1: uniform_dist(np.log(1e-6), np.log(1e-4)),  # mass ratio
-                2: uniform_dist(9.0, 15.0),  # p0
-                3: uniform_dist(0.001, 0.7),  # e0
-                4: uniform_dist(0.0, 2 * np.pi),  # Phi_phi0
-                5: uniform_dist(0.0, 2 * np.pi),  # Phi_r0
+                2: uniform_dist(0.0, 0.998),  # a
+                3: uniform_dist(9.0, 15.0),  # p0
+                4: uniform_dist(0.001, 0.7),  # e0
+                5: uniform_dist(0.0, 10.0),  # x0
+                6: uniform_dist(0.0, 2 * np.pi),  # Phi_phi0
+                7: uniform_dist(0.0, 2 * np.pi),  # Phi_r0
             }
         )
     }
@@ -593,7 +595,7 @@ def run_emri_pe(
         recombination=0.7,
         mutation=(0.5,1),
         x0=initial_params01_reduced,
-        seed=44
+        seed=47
     )
     print(result01)
     initial_params01_reduced = result01.x
