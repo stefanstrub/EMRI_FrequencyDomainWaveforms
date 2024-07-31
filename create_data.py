@@ -217,10 +217,12 @@ def run_emri_pe(
         "fill_values": np.array(
             [dist, qS, phiS, qK, phiK, Phi_theta0] # 0.0, x0
         ),  # spin and inclination and Phi_theta
-        "fill_inds": np.array([i for i, x in enumerate(parameters) if x in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']]) #'a', 'x0'
+        # "fill_inds": np.array([i for i, x in enumerate(parameters) if x in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']]) #'a', 'x0'
+        "fill_inds": np.array([i for i, x in enumerate(parameters) if x in []])
         #[2, 5, 6, 7, 8, 9, 10, 12]),
     }
-    sample_inds = np.array([i for i, x in enumerate(parameters) if x not in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']])
+    # sample_inds = np.array([i for i, x in enumerate(parameters) if x not in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']])
+    sample_inds = np.array([i for i, x in enumerate(parameters) if x not in []])
 
     # mass ratio
     emri_injection_params[1] = np.log(
@@ -230,7 +232,11 @@ def run_emri_pe(
     emri_injection_params[0] = np.log(emri_injection_params[0])
 
     # remove three we are not sampling from (need to change if you go to adding spin)
-    emri_injection_params_in = np.delete(emri_injection_params, fill_dict["fill_inds"])
+    if len(fill_dict["fill_inds"]) > 0:
+        emri_injection_params_in = np.delete(emri_injection_params, fill_dict["fill_inds"])
+    else:
+        emri_injection_params_in = emri_injection_params
+        fill_dict = None
 
     boundaries_dict = {
         # 'M': [np.log(5e5), np.log(1e7)],
@@ -252,6 +258,7 @@ def run_emri_pe(
 
     boundaries_all = np.array(list(boundaries_dict.values()))
     boundaries = boundaries_all[sample_inds]
+    parameters_reduced = np.array(parameters)[sample_inds]
 
     # priors
     priors = {
@@ -582,27 +589,39 @@ def run_emri_pe(
     tf_loglikelihood = from_01_to_timefrequency_loglikelihood(initial_params01_reduced, *args_tf)
     print('tf loglikelihood', tf_loglikelihood)
 
-    result01 = sp.optimize.differential_evolution(
-        from_01_to_timefrequency_loglikelihood,
-        [(0.0, 1.0)]*len(initial_params01_reduced),
-        args=args_tf,
-        maxiter=100,
-        strategy='best1bin',
-        tol=1e-5,
-        disp=True,
-        polish=True,
-        popsize=10,
-        recombination=0.7,
-        mutation=(0.5,1),
-        x0=initial_params01_reduced,
-        seed=47
-    )
-    print(result01)
-    initial_params01_reduced = result01.x
-    loglikelihood = from_01_to_loglikelihood(result01.x, *args)
-    print('loglikelihood', loglikelihood)
-    print('found parameters', transform_parameters_from_01(result01.x, boundaries))
-    print('injected parameters', emri_injection_params[sample_inds])
+    tic = time.perf_counter()
+    found_parameters01 = []
+    for i in range(10):
+        result01 = sp.optimize.differential_evolution(
+            from_01_to_timefrequency_loglikelihood,
+            [(0.0, 1.0)]*len(initial_params01_reduced),
+            args=args_tf,
+            maxiter=100,
+            strategy='best1bin',
+            tol=1e-5,
+            disp=True,
+            polish=True,
+            popsize=10,
+            recombination=0.7,
+            mutation=(0.5,1),
+            x0=initial_params01_reduced,
+            seed=47
+        )
+        print(result01)
+        initial_params01_reduced = result01.x
+        loglikelihood = from_01_to_loglikelihood(result01.x, *args)
+        print('loglikelihood', loglikelihood)
+        print('found parameters', transform_parameters_from_01(result01.x, boundaries))
+        print('injected parameters', emri_injection_params[sample_inds])
+        found_parameters01.append(result01.x)
+        initial_params01_reduced = np.random.uniform(0,1,len(params01_reduced))
+    toc = time.perf_counter()
+    print('time', (toc-tic)/10)
+
+    for result01 in found_parameters01:
+        # print('found parameters', transform_parameters_from_01(result01, boundaries))
+        print('tf loglikelihood', from_01_to_timefrequency_loglikelihood(result01, *args_tf))
+
 
     params = transform_parameters_from_01(result01.x, boundaries)
     sample = transform_fn.both_transforms(params[None, :])[0]
@@ -613,6 +632,21 @@ def run_emri_pe(
     plt.imshow(np.abs(sample_Z[40:200,2:-2]), aspect='auto')
     plt.colorbar()
 
+
+    # check which parameters influence the likelihood
+    for i in range(len(params01_reduced)+1):
+        params01_reduced_test = params01_reduced.copy()
+        if i < len(params01_reduced_test):
+            print('parameter', parameters_reduced[i])
+            params01_reduced_test[i] -= 1e-1
+        tf_loglikelihood = from_01_to_timefrequency_loglikelihood(params01_reduced_test, *args_tf)
+        print('tf loglikelihood', tf_loglikelihood)
+        loglikelihood = from_01_to_loglikelihood(params01_reduced_test, *args)
+        print('loglikelihood', loglikelihood)
+    # indifferent to the parameters:
+    # loglikelihood a, x0, Phi_theta0
+    # tf loglikelihood a, x0, dist, Phi_phi0, Phi_theta0, Phi_r0
+    # tf loglikelihood small qS, phiS, qK, phiK
 
     # generate FD waveforms
     data_channels_fd = fd_gen(*sample, **emri_kwargs)
