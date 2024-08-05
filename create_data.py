@@ -983,9 +983,9 @@ injectFD = 0  # 0 = inject TD
 template = 'td'  #'fd'
 
 # set parameters
-M = 2000000.0  # 1e6
+M = 1500000.0  # 1e6
 a = 0.1  # will be ignored in Schwarzschild waveform
-mu = 10.0  # 10.0
+mu = 15.0  # 10.0
 p0 = 13.709101864726545  # 12.0
 p0 = 8.0  # 12.0
 e0 = 0.35 #0.5794130830706371  # 0.35
