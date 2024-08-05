@@ -65,6 +65,7 @@ def get_noise(N,dt):
     print(inner_product(noise,noise,dt)/N)
     return noise
 
+
 request_gpu = True
 if request_gpu:
     try:
@@ -121,7 +122,7 @@ td_gen = GenerateEMRIWaveform(
     # frame='source',
 )
 
-parameters = ['M', 'q', 'a', 'p0', 'e0', 'x0', 'dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_phi0', 'Phi_theta0', 'Phi_r0']
+parameters = ['M', 'mu', 'a', 'p0', 'e0', 'x0', 'dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_phi0', 'Phi_theta0', 'Phi_r0']
 
 def transform_parameters_to_01(params, boundaries):
     """
@@ -154,7 +155,7 @@ def from_01_to_timefrequency_loglikelihood(params01_reduced, *args):
     """
     Transform parameters from the unit cube to the prior space and compute the SNR
     """
-    transform_fn, data_Z, PSD_arr, boundaries, emri_kwargs, fd_gen, x_diff, sum_data_y, min_frequency_index, max_frequency_index = args
+    transform_fn, data_Z, PSD_arr, boundaries, emri_kwargs, fd_gen, x_diff, sum_data_y, max_frequency_index = args
     params = transform_parameters_from_01(params01_reduced, boundaries)
     sample = transform_fn.both_transforms(params[None, :])[0]
     # generate FD waveforms
@@ -163,16 +164,17 @@ def from_01_to_timefrequency_loglikelihood(params01_reduced, *args):
 
     f_mesh, t_mesh, sample_Z = sp.signal.stft(xp.fft.irfft(xp.array(data_channels_fd[0])).get(), 1/dt, nperseg=5000)
 
-    y = np.divide(np.abs(data_Z[min_frequency_index:max_frequency_index,2:-2]) * np.abs(sample_Z[min_frequency_index:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
-    sample_y = np.divide(np.abs(sample_Z[min_frequency_index:max_frequency_index,2:-2]) * np.abs(sample_Z[min_frequency_index:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
-
-    # y = np.abs(data_Z[min_frequency_index:max_frequency_index,2:-2]) * np.abs(sample_Z[min_frequency_index:max_frequency_index,2:-2])
-    # sample_y = np.abs(sample_Z[min_frequency_index:max_frequency_index,2:-2]) * np.abs(sample_Z[min_frequency_index:max_frequency_index,2:-2])
+    y = np.divide(np.abs(data_Z[:max_frequency_index,2:-2]) * np.abs(sample_Z[:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
+    sample_y = np.divide(np.abs(sample_Z[:max_frequency_index,2:-2]) * np.abs(sample_Z[:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
+    # sample_y_beyond_merger = np.divide(np.abs(sample_Z[:max_frequency_index,-230:-2]) * np.abs(sample_Z[:max_frequency_index,-230:-2]),np.array([PSD_arr]).T) # assumes right summation rule
+    # y = np.abs(data_Z[:max_frequency_index,2:-2]) * np.abs(sample_Z[:max_frequency_index,2:-2])
+    # sample_y = np.abs(sample_Z[:max_frequency_index,2:-2]) * np.abs(sample_Z[:max_frequency_index,2:-2])
 
     sum_y = 4 * xp.sum(x_diff * y)
     # sum_data_y = 4 * xp.sum(x_diff * data_y)
     sum_sample_y = 4 * xp.sum(x_diff * sample_y)
-    out = sum_y/np.sqrt(sum_data_y*sum_sample_y)
+    # sum_sample_y_beyond_merger = 4 * xp.sum(x_diff * sample_y_beyond_merger)
+    out = sum_y/np.sqrt(sum_data_y*sum_sample_y)#-sum_sample_y_beyond_merger
     return -float(out)
 
 
@@ -243,12 +245,12 @@ def run_emri_pe(
         # 'M': [np.log(5e5), np.log(1e7)],
         # 'mu': [np.log(1e-6), np.log(1e-4)],
         'M': [np.log(1e6), np.log(5e6)],
-        'q': [np.log(1e-6), np.log(1e-4)],
+        'mu': [np.log(1e-6), np.log(1e-4)],
         'a': [0.0, 0.998],
-        'p0': [7.5, 10.0],
+        'p0': [7.2, 10.0],
         'e0': [0.001, 0.5],
         'x0': [0.0, 10],
-        'dist': [1.0, 1e4],
+        'dist': [1e-2, 1e2],
         'qS': [0, 10.0],
         'phiS': [0.0, 2*np.pi],
         'qK': [0, 10.0],
@@ -413,9 +415,9 @@ def run_emri_pe(
     # plt.ylim([1e-4, f[-1]])
     # plt.show()
 
-    # plt.figure()
-    # plt.plot(sig_td[0].get())
-    # plt.show()
+    plt.figure()
+    plt.plot(sig_td[0].get())
+    plt.show()
     # plt.savefig(fp[:-3] + "injection.pdf")
 
     # compute the signal only for 1 week for 1 month prior to the merger
@@ -456,15 +458,15 @@ def run_emri_pe(
 
 
 
-    # if use_gpu:
-    #     plt.figure()
-    #     plt.loglog(np.abs(data_channels_fd_noisy[0].get()) ** 2)
-    #     plt.loglog(np.abs(data_stream[0].get()) ** 2)
-    #     plt.savefig(fp[:-3] + "injection.pdf")
-    # else:
-    #     plt.figure()
-    #     plt.loglog(np.abs(data_stream[0]) ** 2)
-    #     plt.savefig(fp[:-3] + "injection.pdf")
+    if use_gpu:
+        plt.figure()
+        plt.loglog(np.abs(data_channels_fd_noisy[0].get()) ** 2)
+        plt.loglog(np.abs(data_stream[0].get()) ** 2)
+        plt.savefig(fp[:-3] + "injection.pdf")
+    else:
+        plt.figure()
+        plt.loglog(np.abs(data_stream[0]) ** 2)
+        plt.savefig(fp[:-3] + "injection.pdf")
 
 
     # check the SNR of the injected signal
@@ -578,30 +580,22 @@ def run_emri_pe(
     loglikelihood = from_01_to_loglikelihood(initial_params01_reduced, *args)
     print('loglikelihood', loglikelihood)
 
-
-    min_frequency = 1e-3
-    high_frequency = 4e-3
-    min_frequency_index = int(min_frequency / f_mesh[1])
-    max_frequency_index = int(high_frequency / f_mesh[1])
-    # min_frequency_index = 0
-    plot_min_frequency_index = np.max([min_frequency_index,50])
-    # max_frequency_index = 200
     plt.figure()
-    plt.imshow(np.abs(data_Z[plot_min_frequency_index:max_frequency_index,2:-2]), aspect='auto', origin='lower')
+    plt.imshow(np.abs(data_Z[40:200,2:-2]), aspect='auto', origin='lower')
     plt.colorbar()
 
-
-    PSD_arr = get_sensitivity(f_mesh[min_frequency_index:max_frequency_index])
-    data_y = np.divide(np.abs(data_Z[min_frequency_index:max_frequency_index,2:-2]) * np.abs(data_Z[min_frequency_index:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
-    # data_y = np.abs(data_Z[min_frequency_index:max_frequency_index,2:-2]) * np.abs(data_Z[min_frequency_index:max_frequency_index,2:-2])
+    max_frequency_index = 200
+    PSD_arr = get_sensitivity(f_mesh[:max_frequency_index])
+    data_y = np.divide(np.abs(data_Z[:max_frequency_index,2:-2]) * np.abs(data_Z[:max_frequency_index,2:-2]),np.array([PSD_arr]).T) # assumes right summation rule
+    # data_y = np.abs(data_Z[:max_frequency_index,2:-2]) * np.abs(data_Z[:max_frequency_index,2:-2]) # assumes right summation rule
     sum_data_y = 4 * xp.sum(x_diff * data_y)
-    args_tf = (transform_fn, data_Z, PSD_arr, boundaries, emri_kwargs, fd_gen, x_diff, sum_data_y, min_frequency_index, max_frequency_index)
+    args_tf = (transform_fn, data_Z, PSD_arr, boundaries, emri_kwargs, fd_gen, x_diff, sum_data_y, max_frequency_index)
     tf_loglikelihood = from_01_to_timefrequency_loglikelihood(params01_reduced, *args_tf)
-    print('tf loglikelihood injected parameters', tf_loglikelihood)
+    print('tf loglikelihood', tf_loglikelihood)
 
     tic = time.perf_counter()
     found_parameters01 = []
-    number_of_runs = 10
+    number_of_runs = 5
     for i in range(number_of_runs):
         result01 = sp.optimize.differential_evolution(
             from_01_to_timefrequency_loglikelihood,
@@ -616,7 +610,7 @@ def run_emri_pe(
             recombination=0.7,
             mutation=(0.5,1),
             x0=initial_params01_reduced,
-            seed=42
+            seed=47
         )
         print(result01)
         initial_params01_reduced = result01.x
@@ -626,6 +620,7 @@ def run_emri_pe(
         print('injected parameters', emri_injection_params[sample_inds])
         found_parameters01.append(result01.x)
         initial_params01_reduced = np.random.uniform(0,1,len(params01_reduced))
+        print('time', (time.perf_counter()-tic)/(i+1))
     toc = time.perf_counter()
     print('time', (toc-tic)/number_of_runs)
 
@@ -633,14 +628,21 @@ def run_emri_pe(
         # print('found parameters', transform_parameters_from_01(result01, boundaries))
         print('tf loglikelihood', from_01_to_timefrequency_loglikelihood(result01, *args_tf))
 
-
+    # result01 = found_parameters01[3]
     params = transform_parameters_from_01(result01.x, boundaries)
     sample = transform_fn.both_transforms(params[None, :])[0]
+    print(parameters)
+    injection_params_linear = transform_fn.both_transforms(emri_injection_params[None, :])[0]
+    print('found parameters', sample)
+    print('injected parameters', transform_fn.both_transforms(emri_injection_params[None, :])[0])
+    print('parameter', 'sample', 'injected')
+    for parameter in parameters:
+        print(parameter, np.round(sample[parameters.index(parameter)],4), np.round(injection_params_linear[parameters.index(parameter)],4))
     sample_fd = fft_td_gen(*sample, **emri_kwargs)
     f_mesh, t_mesh, sig_Z = sp.signal.stft(xp.fft.irfft(xp.array(sig_fd[0])).get(), 1/dt, nperseg=5000)
     f_mesh, t_mesh, sample_Z = sp.signal.stft(xp.fft.irfft(xp.array(sample_fd[0])).get(), 1/dt, nperseg=5000)
     plt.figure()
-    plt.imshow(np.abs(sample_Z[min_frequency_index:max_frequency_index,2:-2]), aspect='auto', origin='lower')
+    plt.imshow(np.abs(sample_Z[40:200,2:-2]), aspect='auto', origin='lower')
     plt.colorbar()
 
 
@@ -1013,7 +1015,7 @@ traj = EMRIInspiral(func="SchwarzEccFlux")
 
 # fix p0 given T
 tic = time.time()
-[get_p_at_t(traj, Tobs * 0.9, [M, mu, 0.0, e0, 1.0], index_of_p=3, index_of_a=2, index_of_e=4, index_of_x=5) for _ in range(10)]
+[get_p_at_t(traj, Tobs * 0.9, [M, mu, a, e0, x0], index_of_p=3, index_of_a=2, index_of_e=4, index_of_x=5) for _ in range(10)]
 toc = time.time()
 print("time to get p0", (toc - tic) / 10)
 p0 = get_p_at_t(
