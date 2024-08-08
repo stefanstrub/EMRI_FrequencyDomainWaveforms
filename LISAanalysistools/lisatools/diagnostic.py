@@ -160,8 +160,10 @@ def inner_product(
             PSD=PSD,
             PSD_args=PSD_args,
             PSD_kwargs=PSD_kwargs,
+            use_gpu=use_gpu,
             normalize=False,
         )
+        normalization_value = np.sqrt(normalization_value)
 
     elif normalize is not False:
         raise ValueError("Normalize must be True, False, 'sig1', or 'sig2'.")
