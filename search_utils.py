@@ -206,40 +206,36 @@ def from_01_to_timefrequency_loglikelihood(params01_reduced, *args):
 # function call
 def search_emri_pe(data_stream,boundaries_all, parameters,
     template="fd",
-    emri_kwargs={}, function_to_optimize='timefrequency', number_of_runs=1,maxiter=100, initial_params=None, injected_params=None):
+    emri_kwargs={}, function_to_optimize='timefrequency', number_of_runs=1,maxiter=100, initial_params=None, injected_params=None, transform_fn=None):
 
     dt = emri_kwargs["dt"]
     # for transforms
     # this is an example of how you would fill parameters
     # if you want to keep them fixed
     # (you need to remove them from the other parts of initialization)
-    fill_dict = {
-        "ndim_full": 14,
-        "fill_values": np.array([]),#[dist, qS, phiS, qK, phiK, Phi_theta0] # 0.0, x0),  # spin and inclination and Phi_theta
-        # "fill_inds": np.array([i for i, x in enumerate(parameters) if x in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']]) #'a', 'x0'
-        "fill_inds": np.array([i for i, x in enumerate(parameters) if x in []])
-        #[2, 5, 6, 7, 8, 9, 10, 12]),
-    }
+
     # sample_inds = np.array([i for i, x in enumerate(parameters) if x not in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']])
     sample_inds = np.array([i for i, x in enumerate(parameters) if x not in []])
 
     boundaries = boundaries_all[sample_inds]
     parameters_reduced = np.array(parameters)[sample_inds]
 
-    # remove three we are not sampling from (need to change if you go to adding spin)
-    if len(fill_dict["fill_inds"]) == 0:
-        fill_dict = None
-    # transforms from pe to waveform generation
-    # after the fill happens (this is a little confusing)
-    # on my list of things to improve
-    parameter_transforms = {
-        (0, 1): transform_mass_ratio,
-    }
+    if transform_fn is None:
+        fill_dict = {
+        "ndim_full": 14,
+        "fill_values": np.array([]),#[dist, qS, phiS, qK, phiK, Phi_theta0] # 0.0, x0),  # spin and inclination and Phi_theta
+        "fill_inds": np.array([i for i, x in enumerate(parameters) if x in []])
+        }
+        if len(fill_dict["fill_inds"]) == 0:
+            fill_dict = None
+        parameter_transforms = {
+            (0, 1): transform_mass_ratio,
+        }
+        transform_fn = TransformContainer(
+            parameter_transforms=parameter_transforms,
+            fill_dict=fill_dict,
+        )
 
-    transform_fn = TransformContainer(
-        parameter_transforms=parameter_transforms,
-        fill_dict=fill_dict,
-    )
     if initial_params is not None:
         initial_params[1] = np.log(initial_params[1] / initial_params[0])# mass ratio
         initial_params[0] = np.log(initial_params[0]) # log of M mbh
@@ -270,15 +266,6 @@ def search_emri_pe(data_stream,boundaries_all, parameters,
             f_arr=frequency[positive_frequency_mask],
         )
 
-
-    if use_gpu:
-        plt.figure()
-        plt.loglog(np.abs(data_stream[0].get()) ** 2)
-    else:
-        plt.figure()
-        plt.loglog(np.abs(data_stream[0]) ** 2)
-
-
     fd_gen = get_fd_waveform_fromFD(few_gen_list, positive_frequency_mask, dt)
     args = (transform_fn, data_stream, boundaries, fd_inner_product_kwargs, emri_kwargs, fd_gen)
     
@@ -288,19 +275,6 @@ def search_emri_pe(data_stream,boundaries_all, parameters,
 
     # f_mesh, t_mesh, Zxx = sp.signal.stft(xp.fft.irfft(xp.array(sig_fd[0])).get(), 1/dt, nperseg=5000)
     f_mesh, t_mesh, Zxx = sp.signal.stft(xp.fft.irfft(xp.array(data_stream[0])).get(), 1/dt, nperseg=5000)
-    plt.figure(figsize=(16,10))
-    cb = plt.pcolormesh(t_mesh[2:-2], f_mesh[40:200], np.log10(np.abs(Zxx[40:200,2:-2])), shading='gouraud')
-    plt.colorbar(cb,)
-    plt.title('STFT Magnitude')
-    plt.ylabel('Frequency [Hz]')
-    plt.xlabel('Time [sec]')
-    plt.yscale('log')
-    plt.ylim([1e-4, f[-1]])
-    plt.show()
-
-    plt.figure()
-    plt.imshow(np.abs(data_Z[40:200,2:-2]), aspect='auto', origin='lower')
-    plt.colorbar()
 
     x_diff = float(xp.diff(f_mesh[:200])[1])
     max_frequency_index = 200
@@ -332,6 +306,8 @@ def search_emri_pe(data_stream,boundaries_all, parameters,
         print('loglikelihood', loglikelihood)
         SNR = from_01_to_SNR(injected_params01_reduced, *args_SNR)
         print('SNR', SNR)
+        loglikelihood = from_01_to_timefrequency_loglikelihood(injected_params01_reduced, *args_tf)
+        print('tf loglikelihood', loglikelihood)
         tic = time.perf_counter()
         SNR = from_01_to_SNR(injected_params01_reduced, *args_SNR)
         toc = time.perf_counter()
@@ -376,3 +352,91 @@ def search_emri_pe(data_stream,boundaries_all, parameters,
     return found_parameters, values
 
 
+def fisher_information(params, boundaries, transform_fn, fd_gen, emri_kwargs, PSD=None, x_diff=10):
+    params_changed = np.copy(params)
+    params_in = np.copy(params)
+    params_in[1] = np.log(params[1] / params[0])# mass ratio
+    params_in[0] = np.log(params[0]) # log of M mbh
+    params01 = transform_parameters_to_01(params_in, boundaries)
+    params01_changed = np.copy(params01)
+    step_size = {}
+    params_low = {}
+    params_high = {}
+    derivativeAf = {}
+    derivativeEf = {}
+    inner_product = {}
+    for i in range(1):
+        for parameter in parameters:
+            if i == 0:
+                step_size[parameter] = 1e-9
+                # if parameter == 'Frequency':
+                #     step_size[parameter] = 0.00001
+            else:
+                step_size[parameter] = 0.001/np.sqrt(inner_product[parameter][parameter])
+            # if step_size[parameter] > 1e-9:
+            #     step_size[parameter] = 1e-9
+            params_low = params01[parameters.index(parameter)] - step_size[parameter]/2
+            params_high = params01[parameters.index(parameter)] + step_size[parameter]/2
+            # print(parameter, step_size[parameter],i)
+            # print(parameter, params_low, params_high)
+            if params_low < 0:
+                params_low = 0
+            if params_high > 1:
+                params_high = 1
+            params01_changed[parameters.index(parameter)] = params_low
+            params_changed = transform_parameters_from_01(params01_changed,boundaries)
+            params_changed = transform_fn.both_transforms(params_changed[None, :])[0]
+            sample_channels_low = fd_gen(*params_changed, **emri_kwargs)
+
+            params01_changed[parameters.index(parameter)] = params_high
+            params_changed = transform_parameters_from_01(params01_changed,boundaries)
+            params_changed = transform_fn.both_transforms(params_changed[None, :])[0]
+            sample_channels_high = fd_gen(*params_changed, **emri_kwargs)
+
+            derivativeAf[parameter] = (sample_channels_high[0] - sample_channels_low[0])/step_size[parameter]
+            derivativeEf[parameter] = (sample_channels_high[1] - sample_channels_low[0])/step_size[parameter]
+
+            params01_changed[parameters.index(parameter)] = params01[parameters.index(parameter)]
+
+        for parameter1 in parameters:
+            inner_product[parameter1] = {}
+            for parameter2 in parameters:
+                AE = derivativeAf[parameter1]*xp.conjugate(derivativeAf[parameter2]) + derivativeAf[parameter1]*xp.conjugate(derivativeAf[parameter2])
+                inner_product[parameter1][parameter2] = 4*float(xp.real(xp.sum(AE / xp.array(PSD)) * x_diff))
+    return inner_product
+
+def reduce_boundaries(found_parameters, boundaries_all, transform_fn, fd_gen, emri_kwargs, PSD=None, x_diff=10):
+    fisher_information_matrix = fisher_information(found_parameters, boundaries_all, transform_fn, fd_gen, emri_kwargs, PSD=PSD, x_diff=x_diff)
+    FIM = np.zeros((len(parameters),len(parameters)))
+    for i,parameter1 in enumerate(parameters):
+        for j,parameter2 in enumerate(parameters):
+            FIM[i,j] = fisher_information_matrix[parameter1][parameter2]
+    covariance_matrix = sp.linalg.inv(FIM)
+    scalematrix = np.sqrt(np.diag(covariance_matrix))
+
+    found_parameters_in = np.copy(found_parameters)
+    found_parameters_in[1] = np.log(found_parameters[1] / found_parameters[0])# mass ratio
+    found_parameters_in[0] = np.log(found_parameters[0]) # log
+    found_parameters01 = transform_parameters_to_01(found_parameters_in, boundaries_all)
+    params01 = found_parameters01
+    params01_low = []
+    params01_high = []
+    boundaries_reduced = np.copy(boundaries_all)
+    sigma_multiplier = 600
+    parameters_first = ['M', 'mu', 'p0', 'e0']
+    for parameter in parameters:
+        params01_low.append(params01[parameters.index(parameter)] - scalematrix[parameters.index(parameter)] * sigma_multiplier)
+        params01_high.append(params01[parameters.index(parameter)] + scalematrix[parameters.index(parameter)] * sigma_multiplier)
+        if params01_low[-1] > params01_high[-1]:
+            placeholder = np.copy(params01_low[-1])
+            params01_low.append(np.copy(params01_high[-1]))
+            params01_high.append(np.copy(placeholder))
+        if params01_low[-1] < 0:
+            params01_low[-1] = 0
+        if params01_high[-1] > 1:
+            params01_high[-1] = 1
+    params_low = transform_parameters_from_01(params01_low, boundaries_all)
+    params_high = transform_parameters_from_01(params01_high, boundaries_all)
+    for parameter in parameters_first:
+        boundaries_reduced[parameters.index(parameter)] = [params_low[parameters.index(parameter)], params_high[parameters.index(parameter)]]
+    return boundaries_reduced

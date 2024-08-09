@@ -178,15 +178,50 @@ waveform_kwargs = {
     "eps": eps
 }
 
+fill_dict = {
+    "ndim_full": 14,
+    "fill_values": np.array([]),#[dist, qS, phiS, qK, phiK, Phi_theta0] # 0.0, x0),  # spin and inclination and Phi_theta
+    # "fill_inds": np.array([i for i, x in enumerate(parameters) if x in ['dist', 'qS', 'phiS', 'qK', 'phiK', 'Phi_theta0']]) #'a', 'x0'
+    "fill_inds": np.array([i for i, x in enumerate(parameters) if x in []])
+    #[2, 5, 6, 7, 8, 9, 10, 12]),
+}
+
+# remove three we are not sampling from (need to change if you go to adding spin)
+if len(fill_dict["fill_inds"]) == 0:
+    fill_dict = None
+# transforms from pe to waveform generation
+# after the fill happens (this is a little confusing)
+# on my list of things to improve
+parameter_transforms = {
+    (0, 1): transform_mass_ratio,
+}
+
+transform_fn = TransformContainer(
+    parameter_transforms=parameter_transforms,
+    fill_dict=fill_dict,
+)
+
+
+# generate FD waveforms
+initial_sample = few_gen(*emri_injection_params, **waveform_kwargs)
+# frequency goes from -1/dt/2 up to 1/dt/2
+frequency = few_gen.waveform_generator.create_waveform.frequency
+positive_frequency_mask = frequency >= 0.0
+fd_gen = get_fd_waveform_fromFD(few_gen_list, positive_frequency_mask, dt)
+
+
+PSD=get_sensitivity(frequency[positive_frequency_mask].get())
+x_diff = float(xp.diff(frequency)[1])
+
 data_stream = pickle.load(open("data_channels_fd_noisy.pkl", 'rb'))
 boundaries_all = pickle.load(open('boundaries.pkl', 'rb'))
 boundaries_all = np.array(list(boundaries_all.values()))
 
-maxiter = 200
-# found_parameters_list, values = search_emri_pe(data_stream,boundaries_all, parameters, function_to_optimize='timefrequency', maxiter=maxiter, template="fd",emri_kwargs=waveform_kwargs)
+maxiter = 500
+# found_parameters_list, values = search_emri_pe(data_stream,boundaries_all, parameters, function_to_optimize='timefrequency', maxiter=maxiter, template="fd",emri_kwargs=waveform_kwargs, transform_fn=transform_fn, injected_params=emri_injection_params)
 # found_parameters = found_parameters_list[np.argmax(values)]
-# pickle.dump(found_parameters, open('found_parameters_maxiter'+str(maxiter)+'.pkl', 'wb'))
-found_parameters = pickle.load(open('found_parameters_maxiter'+str(maxiter)+'.pkl', 'rb'))
+# pickle.dump(found_parameters, open('found_signals/found_parameters_maxiter'+str(maxiter)+'.pkl', 'wb'))
+found_parameters = pickle.load(open('found_signals/found_parameters_maxiter'+str(maxiter)+'.pkl', 'rb'))
 
 print('found parameters', found_parameters)
 print('injected parameters', emri_injection_params)
@@ -199,17 +234,23 @@ emri_injection_params_in[1] = np.log(emri_injection_params[1] / emri_injection_p
 emri_injection_params_in[0] = np.log(emri_injection_params[0]) # log of M mbh
 print('found parameters M q', found_parameters_in)
 print('injected parameters M q', emri_injection_params_in)
+found_parameters01 = transform_parameters_to_01(found_parameters_in, boundaries_all)
 
+boundaries_reduced = reduce_boundaries(found_parameters, boundaries_all, transform_fn, fd_gen, waveform_kwargs, PSD=PSD, x_diff=x_diff)
+print('boundaries_reduced', boundaries_reduced)
 
-boundaries_reduced = np.copy(boundaries_all)
-boundaries_reduced[0] = [14.506,14.509]
-boundaries_reduced[1] = [-11.51,-11.525]
-boundaries_reduced[3] = [7.535,7.536]
-boundaries_reduced[4] = [0.345,0.355]
+# boundaries_reduced = np.copy(boundaries_all)
+# boundaries_reduced[0] = [14.506,14.509]
+# boundaries_reduced[1] = [-11.51,-11.525]
+# boundaries_reduced[3] = [7.535,7.536]
+# boundaries_reduced[4] = [0.345,0.355]
 
+maxiter = 1000
+# found_parameters_list, values = search_emri_pe(data_stream,boundaries_reduced, parameters, function_to_optimize='loglikelihood', maxiter=maxiter, initial_params=found_parameters, template="fd",emri_kwargs=waveform_kwargs, injected_params=emri_injection_params, transform_fn=transform_fn)
+# found_parameters = found_parameters_list[np.argmax(values)]
+# pickle.dump(found_parameters, open('found_signals/found_parameters_second_maxiter'+str(maxiter)+'.pkl', 'wb'))
+found_parameters = pickle.load(open('found_signals/found_parameters_second_maxiter'+str(maxiter)+'.pkl', 'rb'))
 
-found_parameters_list, values = search_emri_pe(data_stream,boundaries_reduced, parameters, function_to_optimize='loglikelihood', maxiter=500, initial_params=found_parameters, template="fd",emri_kwargs=waveform_kwargs, injected_params=emri_injection_params)
-found_parameters = found_parameters_list[np.argmax(values)]
 
 for parameter in parameters:
     print(parameter, np.round(found_parameters[parameters.index(parameter)],4), np.round(emri_injection_params[parameters.index(parameter)],4))
