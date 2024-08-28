@@ -1,13 +1,8 @@
 import sys
 import numpy as np
 import scipy as sp
-from eryn.state import State
-from eryn.ensemble import EnsembleSampler
-from eryn.prior import ProbDistContainer, uniform_dist
-import corner
 from lisatools.utils.utility import AET
 
-from eryn.moves import StretchMove, GaussianMove
 from lisatools.sampling.likelihood import Likelihood
 from LISAanalysistools.lisatools.diagnostic import *
 import multiprocessing as mp
@@ -35,6 +30,7 @@ import time
 import matplotlib.pyplot as plt
 from few.utils.constants import *
 from search_utils import *
+from tools import create_response_EMRI
 
 SEED = 2601996
 np.random.seed(SEED)
