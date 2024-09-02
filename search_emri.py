@@ -30,7 +30,6 @@ import time
 import matplotlib.pyplot as plt
 from few.utils.constants import *
 from search_utils import *
-from tools import create_response_EMRI
 
 SEED = 2601996
 np.random.seed(SEED)
@@ -214,10 +213,10 @@ boundaries_all = pickle.load(open('boundaries.pkl', 'rb'))
 boundaries_all = np.array(list(boundaries_all.values()))
 
 maxiter = 500
-# found_parameters_list, values = search_emri_pe(data_stream,boundaries_all, parameters, function_to_optimize='timefrequency', maxiter=maxiter, template="fd",emri_kwargs=waveform_kwargs, transform_fn=transform_fn, injected_params=emri_injection_params)
-# found_parameters = found_parameters_list[np.argmax(values)]
+found_parameters_list, values = search_emri_pe(data_stream,boundaries_all, parameters, function_to_optimize='timefrequency', maxiter=maxiter, template="fd",emri_kwargs=waveform_kwargs, transform_fn=transform_fn, injected_params=emri_injection_params)
+found_parameters = found_parameters_list[np.argmax(values)]
 # pickle.dump(found_parameters, open('found_signals/found_parameters_maxiter'+str(maxiter)+'.pkl', 'wb'))
-found_parameters = pickle.load(open('found_signals/found_parameters_maxiter'+str(maxiter)+'.pkl', 'rb'))
+# found_parameters = pickle.load(open('found_signals/found_parameters_maxiter'+str(maxiter)+'.pkl', 'rb'))
 
 print('found parameters', found_parameters)
 print('injected parameters', emri_injection_params)
