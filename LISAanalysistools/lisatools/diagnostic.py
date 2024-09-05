@@ -60,12 +60,12 @@ def inner_product(
 
         length = len(sig1[0])
 
-        freqs = xp.fft.rfftfreq(length, dt)[1:]
+        freqs = xp.fft.rfftfreq(length, dt)
 
         ft_sig1 = [
-            xp.fft.rfft(sig)[1:] * dt for sig in sig1
+            xp.fft.rfft(sig) * dt for sig in sig1
         ]  # remove DC / dt factor helps to cast to proper dimensionality
-        ft_sig2 = [xp.fft.rfft(sig)[1:] * dt for sig in sig2]  # remove DC
+        ft_sig2 = [xp.fft.rfft(sig) * dt for sig in sig2]  # remove DC
 
     else:
         ft_sig1 = sig1
@@ -94,10 +94,8 @@ def inner_product(
 
     out = 0.0
     # assumes right summation rule
-    x_vals = xp.zeros(len(PSD_arr))
-
-    x_vals[1:] = xp.diff(freqs)
-    x_vals[0] = x_vals[1]
+    x_vals = xp.ones(len(PSD_arr))
+    x_vals *= xp.diff(freqs)[0]
 
     # account for hp and hx if included in time domain signal
     for temp1, temp2 in zip(ft_sig1, ft_sig2):

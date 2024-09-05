@@ -4,17 +4,15 @@ import scipy as sp
 from eryn.state import State
 from eryn.ensemble import EnsembleSampler
 from eryn.prior import ProbDistContainer, uniform_dist
-import corner
 from lisatools.utils.utility import AET
 
-from eryn.moves import StretchMove, GaussianMove
 from lisatools.sampling.likelihood import Likelihood
 from lisatools.diagnostic import *
 import multiprocessing as mp
 
 
 # from lisatools.sensitivity import get_sensitivity
-from FDutils import *
+# from FDutils import *
 from scipy.signal.windows import (
     blackman,
     blackmanharris,
@@ -63,7 +61,6 @@ sens_fn = CubicSplineInterpolant(f, PSD, use_gpu=False)
 def get_noise(N,dt):
     freq = np.fft.rfftfreq(N,dt)
     noise = np.fft.irfft(np.random.normal(0.0,np.sqrt(sens_fn(freq)))+1j*np.random.normal(0.0,np.sqrt(sens_fn(freq))))/np.sqrt(dt*4/N)
-    print(inner_product(noise,noise,dt)/N)
     return noise
 
 
